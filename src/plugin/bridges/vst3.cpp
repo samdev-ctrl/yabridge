@@ -21,6 +21,9 @@
 #include "../../common/serialization/vst3-impls/context-menu-target.h"
 #include "../../common/serialization/vst3.h"
 #include "vst3-impls/plugin-proxy.h"
+#ifdef WITH_ARA
+#include "vst3-impls/ara-document-controller-proxy.h"
+#endif
 
 using namespace std::literals::string_literals;
 
@@ -407,6 +410,522 @@ Vst3PluginBridge::Vst3PluginBridge(const ghc::filesystem::path& plugin_path)
                     return proxy_object.unit_handler_2_
                         ->notifyUnitByBusChange();
                 },
+#ifdef WITH_ARA
+                [&](const YaAra::HostCallback::CreateAudioReader& request)
+                    -> YaAra::HostCallback::CreateAudioReader::Response {
+                    std::lock_guard lock(ara_document_controllers_mutex_);
+                    auto& proxy =
+                        *ara_document_controllers_.at(request.ara_dc_id);
+                    const uint64_t handle =
+                        proxy.next_audio_reader_handle_.fetch_add(1);
+                    auto host_ref = reinterpret_cast<ARA::ARAAudioSourceHostRef>(
+                        proxy.audio_source_host_refs_.at(
+                            request.audio_source_host_ref));
+                    ARA::ARAAudioReaderHostRef reader =
+                        proxy.host_instance_->audioAccessControllerInterface
+                            ->createAudioReaderForSource(
+                                proxy.host_instance_
+                                    ->audioAccessControllerHostRef,
+                                host_ref,
+                                static_cast<ARA::ARABool>(
+                                    request.use_64bit_samples));
+                    proxy.audio_reader_host_refs_.emplace(handle, reader);
+                    return {handle};
+                },
+                [&](const YaAra::HostCallback::DestroyAudioReader& request)
+                    -> YaAra::HostCallback::DestroyAudioReader::Response {
+                    std::lock_guard lock(ara_document_controllers_mutex_);
+                    auto& proxy =
+                        *ara_document_controllers_.at(request.ara_dc_id);
+                    auto it =
+                        proxy.audio_reader_host_refs_.find(
+                            request.audio_reader_id);
+                    if (it != proxy.audio_reader_host_refs_.end()) {
+                        proxy.host_instance_->audioAccessControllerInterface
+                            ->destroyAudioReader(
+                                proxy.host_instance_
+                                    ->audioAccessControllerHostRef,
+                                it->second);
+                        proxy.audio_reader_host_refs_.erase(it);
+                    }
+                    return Ack{};
+                },
+                [&](const YaAra::HostCallback::GetArchiveSize& request)
+                    -> YaAra::HostCallback::GetArchiveSize::Response {
+                    std::lock_guard lock(ara_document_controllers_mutex_);
+                    auto& proxy =
+                        *ara_document_controllers_.at(request.ara_dc_id);
+                    auto reader = reinterpret_cast<ARA::ARAArchiveReaderHostRef>(
+                        request.archive_reader_host_ref);
+                    const ARA::ARASize size =
+                        proxy.host_instance_->archivingControllerInterface
+                            ->getArchiveSize(
+                                proxy.host_instance_->archivingControllerHostRef,
+                                reader);
+                    return {static_cast<uint64_t>(size)};
+                },
+                [&](const YaAra::HostCallback::ReadBytesFromArchive& request)
+                    -> YaAra::HostCallback::ReadBytesFromArchive::Response {
+                    std::lock_guard lock(ara_document_controllers_mutex_);
+                    auto& proxy =
+                        *ara_document_controllers_.at(request.ara_dc_id);
+                    auto reader = reinterpret_cast<ARA::ARAArchiveReaderHostRef>(
+                        request.archive_reader_host_ref);
+                    std::vector<uint8_t> buf(request.length);
+                    const ARA::ARABool ok =
+                        proxy.host_instance_->archivingControllerInterface
+                            ->readBytesFromArchive(
+                                proxy.host_instance_->archivingControllerHostRef,
+                                reader,
+                                static_cast<ARA::ARASize>(request.position),
+                                static_cast<ARA::ARASize>(request.length),
+                                buf.data());
+                    if (!ok)
+                        buf.clear();
+                    return {std::move(buf)};
+                },
+                [&](const YaAra::HostCallback::WriteBytesToArchive& request)
+                    -> YaAra::HostCallback::WriteBytesToArchive::Response {
+                    std::lock_guard lock(ara_document_controllers_mutex_);
+                    auto& proxy =
+                        *ara_document_controllers_.at(request.ara_dc_id);
+                    auto writer = reinterpret_cast<ARA::ARAArchiveWriterHostRef>(
+                        request.archive_writer_host_ref);
+                    const ARA::ARABool ok =
+                        proxy.host_instance_->archivingControllerInterface
+                            ->writeBytesToArchive(
+                                proxy.host_instance_->archivingControllerHostRef,
+                                writer,
+                                static_cast<ARA::ARASize>(request.position),
+                                static_cast<ARA::ARASize>(request.data.size()),
+                                request.data.data());
+                    return {ok ? 1 : 0};
+                },
+                [&](const YaAra::HostCallback::NotifyDocumentArchivingProgress&
+                        request)
+                    -> YaAra::HostCallback::NotifyDocumentArchivingProgress::
+                        Response {
+                    std::lock_guard lock(ara_document_controllers_mutex_);
+                    auto& proxy =
+                        *ara_document_controllers_.at(request.ara_dc_id);
+                    proxy.host_instance_->archivingControllerInterface
+                        ->notifyDocumentArchivingProgress(
+                            proxy.host_instance_->archivingControllerHostRef,
+                            request.value);
+                    return Ack{};
+                },
+                [&](const YaAra::HostCallback::NotifyDocumentUnarchivingProgress&
+                        request)
+                    -> YaAra::HostCallback::NotifyDocumentUnarchivingProgress::
+                        Response {
+                    std::lock_guard lock(ara_document_controllers_mutex_);
+                    auto& proxy =
+                        *ara_document_controllers_.at(request.ara_dc_id);
+                    proxy.host_instance_->archivingControllerInterface
+                        ->notifyDocumentUnarchivingProgress(
+                            proxy.host_instance_->archivingControllerHostRef,
+                            request.value);
+                    return Ack{};
+                },
+                [&](const YaAra::HostCallback::GetDocumentArchiveID& request)
+                    -> YaAra::HostCallback::GetDocumentArchiveID::Response {
+                    std::lock_guard lock(ara_document_controllers_mutex_);
+                    auto& proxy =
+                        *ara_document_controllers_.at(request.ara_dc_id);
+                    auto reader = reinterpret_cast<ARA::ARAArchiveReaderHostRef>(
+                        request.archive_reader_host_ref);
+                    ARA::ARAPersistentID id =
+                        proxy.host_instance_->archivingControllerInterface
+                            ->getDocumentArchiveID(
+                                proxy.host_instance_->archivingControllerHostRef,
+                                reader);
+                    return {id ? std::string(id) : std::string{}};
+                },
+                [&](const YaAra::HostCallback::IsMusicalContextContentAvailable&
+                        request)
+                    -> YaAra::HostCallback::IsMusicalContextContentAvailable::
+                        Response {
+                    std::lock_guard lock(ara_document_controllers_mutex_);
+                    auto& proxy =
+                        *ara_document_controllers_.at(request.ara_dc_id);
+                    auto ctx = reinterpret_cast<ARA::ARAMusicalContextHostRef>(
+                        proxy.musical_context_host_refs_.at(
+                            request.musical_context_host_ref));
+                    return {static_cast<int32_t>(
+                        proxy.host_instance_->contentAccessControllerInterface
+                            ->isMusicalContextContentAvailable(
+                                proxy.host_instance_
+                                    ->contentAccessControllerHostRef,
+                                ctx,
+                                static_cast<ARA::ARAContentType>(
+                                    request.content_type)))};
+                },
+                [&](const YaAra::HostCallback::GetMusicalContextContentGrade&
+                        request)
+                    -> YaAra::HostCallback::GetMusicalContextContentGrade::
+                        Response {
+                    std::lock_guard lock(ara_document_controllers_mutex_);
+                    auto& proxy =
+                        *ara_document_controllers_.at(request.ara_dc_id);
+                    auto ctx = reinterpret_cast<ARA::ARAMusicalContextHostRef>(
+                        proxy.musical_context_host_refs_.at(
+                            request.musical_context_host_ref));
+                    return {static_cast<int32_t>(
+                        proxy.host_instance_->contentAccessControllerInterface
+                            ->getMusicalContextContentGrade(
+                                proxy.host_instance_
+                                    ->contentAccessControllerHostRef,
+                                ctx,
+                                static_cast<ARA::ARAContentType>(
+                                    request.content_type)))};
+                },
+                [&](const YaAra::HostCallback::CreateMusicalContextContentReader&
+                        request)
+                    -> YaAra::HostCallback::CreateMusicalContextContentReader::
+                        Response {
+                    std::lock_guard lock(ara_document_controllers_mutex_);
+                    auto& proxy =
+                        *ara_document_controllers_.at(request.ara_dc_id);
+                    auto ctx = reinterpret_cast<ARA::ARAMusicalContextHostRef>(
+                        proxy.musical_context_host_refs_.at(
+                            request.musical_context_host_ref));
+                    ARA::ARAContentTimeRange ara_range{};
+                    const ARA::ARAContentTimeRange* range_ptr = nullptr;
+                    if (request.range) {
+                        ara_range = {request.range->start,
+                                     request.range->duration};
+                        range_ptr = &ara_range;
+                    }
+                    ARA::ARAContentReaderHostRef reader =
+                        proxy.host_instance_->contentAccessControllerInterface
+                            ->createMusicalContextContentReader(
+                                proxy.host_instance_
+                                    ->contentAccessControllerHostRef,
+                                ctx,
+                                static_cast<ARA::ARAContentType>(
+                                    request.content_type),
+                                range_ptr);
+                    const uint64_t handle =
+                        proxy.next_content_reader_handle_.fetch_add(1);
+                    proxy.content_reader_host_refs_.emplace(handle, reader);
+                    return {handle};
+                },
+                [&](const YaAra::HostCallback::IsAudioSourceContentAvailable&
+                        request)
+                    -> YaAra::HostCallback::IsAudioSourceContentAvailable::
+                        Response {
+                    std::lock_guard lock(ara_document_controllers_mutex_);
+                    auto& proxy =
+                        *ara_document_controllers_.at(request.ara_dc_id);
+                    auto src = proxy.audio_source_host_refs_.at(
+                        request.audio_source_host_ref);
+                    return {static_cast<int32_t>(
+                        proxy.host_instance_->contentAccessControllerInterface
+                            ->isAudioSourceContentAvailable(
+                                proxy.host_instance_
+                                    ->contentAccessControllerHostRef,
+                                src,
+                                static_cast<ARA::ARAContentType>(
+                                    request.content_type)))};
+                },
+                [&](const YaAra::HostCallback::GetAudioSourceContentGrade&
+                        request)
+                    -> YaAra::HostCallback::GetAudioSourceContentGrade::
+                        Response {
+                    std::lock_guard lock(ara_document_controllers_mutex_);
+                    auto& proxy =
+                        *ara_document_controllers_.at(request.ara_dc_id);
+                    auto src = proxy.audio_source_host_refs_.at(
+                        request.audio_source_host_ref);
+                    return {static_cast<int32_t>(
+                        proxy.host_instance_->contentAccessControllerInterface
+                            ->getAudioSourceContentGrade(
+                                proxy.host_instance_
+                                    ->contentAccessControllerHostRef,
+                                src,
+                                static_cast<ARA::ARAContentType>(
+                                    request.content_type)))};
+                },
+                [&](const YaAra::HostCallback::CreateAudioSourceContentReader&
+                        request)
+                    -> YaAra::HostCallback::CreateAudioSourceContentReader::
+                        Response {
+                    std::lock_guard lock(ara_document_controllers_mutex_);
+                    auto& proxy =
+                        *ara_document_controllers_.at(request.ara_dc_id);
+                    auto src = proxy.audio_source_host_refs_.at(
+                        request.audio_source_host_ref);
+                    ARA::ARAContentTimeRange ara_range{};
+                    const ARA::ARAContentTimeRange* range_ptr = nullptr;
+                    if (request.range) {
+                        ara_range = {request.range->start,
+                                     request.range->duration};
+                        range_ptr = &ara_range;
+                    }
+                    ARA::ARAContentReaderHostRef reader =
+                        proxy.host_instance_->contentAccessControllerInterface
+                            ->createAudioSourceContentReader(
+                                proxy.host_instance_
+                                    ->contentAccessControllerHostRef,
+                                src,
+                                static_cast<ARA::ARAContentType>(
+                                    request.content_type),
+                                range_ptr);
+                    const uint64_t handle =
+                        proxy.next_content_reader_handle_.fetch_add(1);
+                    proxy.content_reader_host_refs_.emplace(handle, reader);
+                    return {handle};
+                },
+                [&](const YaAra::HostCallback::GetContentReaderEventCount&
+                        request)
+                    -> YaAra::HostCallback::GetContentReaderEventCount::
+                        Response {
+                    std::lock_guard lock(ara_document_controllers_mutex_);
+                    auto& proxy =
+                        *ara_document_controllers_.at(request.ara_dc_id);
+                    auto reader = proxy.content_reader_host_refs_.at(
+                        request.content_reader_host_ref);
+                    return {proxy.host_instance_
+                                ->contentAccessControllerInterface
+                                ->getContentReaderEventCount(
+                                    proxy.host_instance_
+                                        ->contentAccessControllerHostRef,
+                                    reader)};
+                },
+                [&](const YaAra::HostCallback::GetContentReaderDataForEvent&
+                        request)
+                    -> YaAra::HostCallback::GetContentReaderDataForEvent::
+                        Response {
+                    std::lock_guard lock(ara_document_controllers_mutex_);
+                    auto& proxy =
+                        *ara_document_controllers_.at(request.ara_dc_id);
+                    auto reader = proxy.content_reader_host_refs_.at(
+                        request.content_reader_host_ref);
+                    const void* data =
+                        proxy.host_instance_->contentAccessControllerInterface
+                            ->getContentReaderDataForEvent(
+                                proxy.host_instance_
+                                    ->contentAccessControllerHostRef,
+                                reader,
+                                request.event_index);
+                    if (!data)
+                        return {{}};
+                    // The ARA spec does not expose the event data size directly;
+                    // we use the content type to determine the struct size.
+                    size_t event_size = 0;
+                    switch (static_cast<ARA::ARAContentType>(
+                        request.content_type)) {
+                        case ARA::kARAContentTypeNotes:
+                            event_size =
+                                sizeof(ARA::ARAContentNote);
+                            break;
+                        case ARA::kARAContentTypeTempoEntries:
+                            event_size =
+                                sizeof(ARA::ARAContentTempoEntry);
+                            break;
+                        case ARA::kARAContentTypeBarSignatures:
+                            event_size =
+                                sizeof(ARA::ARAContentBarSignature);
+                            break;
+                        case ARA::kARAContentTypeStaticTuning:
+                            event_size =
+                                sizeof(ARA::ARAContentTuning);
+                            break;
+                        case ARA::kARAContentTypeKeySignatures:
+                            event_size =
+                                sizeof(ARA::ARAContentKeySignature);
+                            break;
+                        case ARA::kARAContentTypeSheetChords:
+                            event_size =
+                                sizeof(ARA::ARAContentChord);
+                            break;
+                        default:
+                            return {{}};
+                    }
+                    const auto* bytes =
+                        static_cast<const uint8_t*>(data);
+                    return {std::vector<uint8_t>(bytes,
+                                                 bytes + event_size)};
+                },
+                [&](const YaAra::HostCallback::DestroyContentReader& request)
+                    -> YaAra::HostCallback::DestroyContentReader::Response {
+                    std::lock_guard lock(ara_document_controllers_mutex_);
+                    auto& proxy =
+                        *ara_document_controllers_.at(request.ara_dc_id);
+                    auto it = proxy.content_reader_host_refs_.find(
+                        request.content_reader_host_ref);
+                    if (it != proxy.content_reader_host_refs_.end()) {
+                        proxy.host_instance_->contentAccessControllerInterface
+                            ->destroyContentReader(
+                                proxy.host_instance_
+                                    ->contentAccessControllerHostRef,
+                                it->second);
+                        proxy.content_reader_host_refs_.erase(it);
+                    }
+                    return Ack{};
+                },
+                [&](const YaAra::HostCallback::NotifyAudioSourceAnalysisProgress&
+                        request)
+                    -> YaAra::HostCallback::NotifyAudioSourceAnalysisProgress::
+                        Response {
+                    std::lock_guard lock(ara_document_controllers_mutex_);
+                    auto& proxy =
+                        *ara_document_controllers_.at(request.ara_dc_id);
+                    auto src = proxy.audio_source_host_refs_.at(
+                        request.audio_source_host_ref);
+                    proxy.host_instance_->modelUpdateControllerInterface
+                        ->notifyAudioSourceAnalysisProgress(
+                            proxy.host_instance_->modelUpdateControllerHostRef,
+                            src,
+                            static_cast<ARA::ARAAnalysisProgressState>(
+                                request.state),
+                            request.value);
+                    return Ack{};
+                },
+                [&](const YaAra::HostCallback::NotifyAudioSourceContentChanged&
+                        request)
+                    -> YaAra::HostCallback::NotifyAudioSourceContentChanged::
+                        Response {
+                    std::lock_guard lock(ara_document_controllers_mutex_);
+                    auto& proxy =
+                        *ara_document_controllers_.at(request.ara_dc_id);
+                    auto src = proxy.audio_source_host_refs_.at(
+                        request.audio_source_host_ref);
+                    ARA::ARAContentTimeRange ara_range{};
+                    const ARA::ARAContentTimeRange* range_ptr = nullptr;
+                    if (request.range) {
+                        ara_range = {request.range->start,
+                                     request.range->duration};
+                        range_ptr = &ara_range;
+                    }
+                    proxy.host_instance_->modelUpdateControllerInterface
+                        ->notifyAudioSourceContentChanged(
+                            proxy.host_instance_->modelUpdateControllerHostRef,
+                            src,
+                            range_ptr,
+                            static_cast<ARA::ARAContentUpdateFlags>(
+                                request.flags));
+                    return Ack{};
+                },
+                [&](const YaAra::HostCallback::
+                        NotifyAudioModificationContentChanged& request)
+                    -> YaAra::HostCallback::
+                        NotifyAudioModificationContentChanged::Response {
+                    std::lock_guard lock(ara_document_controllers_mutex_);
+                    auto& proxy =
+                        *ara_document_controllers_.at(request.ara_dc_id);
+                    auto mod = proxy.audio_modification_host_refs_.at(
+                        request.audio_modification_host_ref);
+                    ARA::ARAContentTimeRange ara_range{};
+                    const ARA::ARAContentTimeRange* range_ptr = nullptr;
+                    if (request.range) {
+                        ara_range = {request.range->start,
+                                     request.range->duration};
+                        range_ptr = &ara_range;
+                    }
+                    proxy.host_instance_->modelUpdateControllerInterface
+                        ->notifyAudioModificationContentChanged(
+                            proxy.host_instance_->modelUpdateControllerHostRef,
+                            mod,
+                            range_ptr,
+                            static_cast<ARA::ARAContentUpdateFlags>(
+                                request.flags));
+                    return Ack{};
+                },
+                [&](const YaAra::HostCallback::
+                        NotifyPlaybackRegionContentChanged& request)
+                    -> YaAra::HostCallback::
+                        NotifyPlaybackRegionContentChanged::Response {
+                    std::lock_guard lock(ara_document_controllers_mutex_);
+                    auto& proxy =
+                        *ara_document_controllers_.at(request.ara_dc_id);
+                    auto region = proxy.playback_region_host_refs_.at(
+                        request.playback_region_host_ref);
+                    ARA::ARAContentTimeRange ara_range{};
+                    const ARA::ARAContentTimeRange* range_ptr = nullptr;
+                    if (request.range) {
+                        ara_range = {request.range->start,
+                                     request.range->duration};
+                        range_ptr = &ara_range;
+                    }
+                    proxy.host_instance_->modelUpdateControllerInterface
+                        ->notifyPlaybackRegionContentChanged(
+                            proxy.host_instance_->modelUpdateControllerHostRef,
+                            region,
+                            range_ptr,
+                            static_cast<ARA::ARAContentUpdateFlags>(
+                                request.flags));
+                    return Ack{};
+                },
+                [&](const YaAra::HostCallback::NotifyDocumentDataChanged&
+                        request)
+                    -> YaAra::HostCallback::NotifyDocumentDataChanged::
+                        Response {
+                    std::lock_guard lock(ara_document_controllers_mutex_);
+                    auto& proxy =
+                        *ara_document_controllers_.at(request.ara_dc_id);
+                    proxy.host_instance_->modelUpdateControllerInterface
+                        ->notifyDocumentDataChanged(
+                            proxy.host_instance_->modelUpdateControllerHostRef);
+                    return Ack{};
+                },
+                [&](const YaAra::HostCallback::RequestStartPlayback& request)
+                    -> YaAra::HostCallback::RequestStartPlayback::Response {
+                    std::lock_guard lock(ara_document_controllers_mutex_);
+                    auto& proxy =
+                        *ara_document_controllers_.at(request.ara_dc_id);
+                    proxy.host_instance_->playbackControllerInterface
+                        ->requestStartPlayback(
+                            proxy.host_instance_->playbackControllerHostRef);
+                    return Ack{};
+                },
+                [&](const YaAra::HostCallback::RequestStopPlayback& request)
+                    -> YaAra::HostCallback::RequestStopPlayback::Response {
+                    std::lock_guard lock(ara_document_controllers_mutex_);
+                    auto& proxy =
+                        *ara_document_controllers_.at(request.ara_dc_id);
+                    proxy.host_instance_->playbackControllerInterface
+                        ->requestStopPlayback(
+                            proxy.host_instance_->playbackControllerHostRef);
+                    return Ack{};
+                },
+                [&](const YaAra::HostCallback::RequestSetPlaybackPosition&
+                        request)
+                    -> YaAra::HostCallback::RequestSetPlaybackPosition::
+                        Response {
+                    std::lock_guard lock(ara_document_controllers_mutex_);
+                    auto& proxy =
+                        *ara_document_controllers_.at(request.ara_dc_id);
+                    proxy.host_instance_->playbackControllerInterface
+                        ->requestSetPlaybackPosition(
+                            proxy.host_instance_->playbackControllerHostRef,
+                            request.time_position);
+                    return Ack{};
+                },
+                [&](const YaAra::HostCallback::RequestSetCycleRange& request)
+                    -> YaAra::HostCallback::RequestSetCycleRange::Response {
+                    std::lock_guard lock(ara_document_controllers_mutex_);
+                    auto& proxy =
+                        *ara_document_controllers_.at(request.ara_dc_id);
+                    proxy.host_instance_->playbackControllerInterface
+                        ->requestSetCycleRange(
+                            proxy.host_instance_->playbackControllerHostRef,
+                            request.start_time,
+                            request.duration);
+                    return Ack{};
+                },
+                [&](const YaAra::HostCallback::RequestEnableCycle& request)
+                    -> YaAra::HostCallback::RequestEnableCycle::Response {
+                    std::lock_guard lock(ara_document_controllers_mutex_);
+                    auto& proxy =
+                        *ara_document_controllers_.at(request.ara_dc_id);
+                    proxy.host_instance_->playbackControllerInterface
+                        ->requestEnableCycle(
+                            proxy.host_instance_->playbackControllerHostRef,
+                            static_cast<ARA::ARABool>(request.enable));
+                    return Ack{};
+                },
+#endif  // WITH_ARA
             });
     });
 }
@@ -485,17 +1004,17 @@ void Vst3PluginBridge::unregister_plugin_proxy(
 
 #ifdef WITH_ARA
 
-#include "vst3-impls/ara-document-controller-proxy.h"
-
 const ARA::ARADocumentControllerInstance*
-Vst3PluginBridge::register_ara_document_controller(native_size_t ara_dc_id) {
+Vst3PluginBridge::register_ara_document_controller(
+    native_size_t ara_dc_id,
+    const ARA::ARADocumentControllerHostInstance* host_instance) {
     auto proxy = std::make_unique<AraDocumentControllerProxy>(*this, ara_dc_id);
-    const ARA::ARADocumentControllerInstance* instance =
-        &proxy->ara_dc_instance();
+    proxy->host_instance_ = host_instance;
 
     std::lock_guard lock(ara_document_controllers_mutex_);
-    ara_document_controllers_.emplace(ara_dc_id, std::move(proxy));
-    return instance;
+    auto [it, _] = ara_document_controllers_.insert_or_assign(
+        ara_dc_id, std::move(proxy));
+    return &it->second->ara_dc_instance();
 }
 
 void Vst3PluginBridge::unregister_ara_document_controller(

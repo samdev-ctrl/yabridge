@@ -1428,41 +1428,52 @@ Vst3PluginProxyImpl::create_ara_document_controller(
     const ARA::ARADocumentControllerHostInstance* hostInstance,
     const ARA::ARADocumentProperties* properties,
     native_size_t ara_dc_id) {
-    const std::string doc_name =
-        (properties && properties->name) ? properties->name : "";
-    const std::string factory_id =
-        ara_factory_cache_ ? ara_factory_cache_->factoryID : "";
+    try {
+        const std::string doc_name =
+            (properties && properties->name) ? properties->name : "";
+        const std::string factory_id =
+            ara_factory_cache_ ? ara_factory_cache_->factoryID : "";
 
-    {
-        std::ostringstream msg;
-        msg << "[ARA] instance " << instance_id()
-            << ": createDocumentControllerWithDocument(name=\"" << doc_name
-            << "\", factoryID=\"" << factory_id << "\")";
-        bridge_.logger_.log(msg.str());
+        {
+            std::ostringstream msg;
+            msg << "[ARA] instance " << instance_id()
+                << ": createDocumentControllerWithDocument(name=\"" << doc_name
+                << "\", factoryID=\"" << factory_id << "\")";
+            bridge_.logger_.log(msg.str());
+        }
+
+        // Pre-register so host callbacks fired during
+        // createDocumentControllerWithDocument can resolve ara_dc_id.
+        const ARA::ARADocumentControllerInstance* dc_instance =
+            bridge_.register_ara_document_controller(ara_dc_id, hostInstance);
+
+        auto response = bridge_.send_message(YaAra::CreateDocumentController{
+            .instance_id = instance_id(),
+            .ara_dc_id = ara_dc_id,
+            .factory_id = factory_id,
+            .document_properties = YaAraDocumentProperties{.name = doc_name}});
+
+        return std::visit(
+            overload{
+                [&](uint64_t /*wine_dc_ref*/)
+                    -> const ARA::ARADocumentControllerInstance* {
+                    return dc_instance;
+                },
+                [&](const UniversalTResult&)
+                    -> const ARA::ARADocumentControllerInstance* {
+                    bridge_.logger_.log(
+                        "WARNING: createDocumentControllerWithDocument() "
+                        "returned null from Wine side");
+                    bridge_.unregister_ara_document_controller(ara_dc_id);
+                    return nullptr;
+                }},
+            std::move(response));
+    } catch (...) {
+        bridge_.logger_.log(
+            "WARNING: exception in "
+            "createDocumentControllerWithDocument(), returning null");
+        return nullptr;
     }
-
-    (void)hostInstance;
-
-    auto response = bridge_.send_message(YaAra::CreateDocumentController{
-        .instance_id = instance_id(),
-        .ara_dc_id = ara_dc_id,
-        .factory_id = factory_id,
-        .document_properties = YaAraDocumentProperties{.name = doc_name}});
-
-    return std::visit(
-        overload{
-            [&](uint64_t /*wine_dc_ref*/)
-                -> const ARA::ARADocumentControllerInstance* {
-                return bridge_.register_ara_document_controller(ara_dc_id);
-            },
-            [&](const UniversalTResult&)
-                -> const ARA::ARADocumentControllerInstance* {
-                bridge_.logger_.log(
-                    "WARNING: createDocumentControllerWithDocument() "
-                    "returned null from Wine side");
-                return nullptr;
-            }},
-        std::move(response));
 }
 
 const ARA::ARAPlugInExtensionInstance* PLUGIN_API

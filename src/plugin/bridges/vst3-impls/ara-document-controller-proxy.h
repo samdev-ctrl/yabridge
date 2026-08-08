@@ -53,6 +53,19 @@ class AraDocumentControllerProxy {
     std::unordered_map<uint64_t, ARA::ARAPlaybackRegionHostRef>
         playback_region_host_refs_;
 
+    // Content reader host refs, created by the host and tracked per DC.
+    std::unordered_map<uint64_t, ARA::ARAContentReaderHostRef>
+        content_reader_host_refs_;
+    std::atomic_uint64_t next_content_reader_handle_{1};
+
+    // Audio reader host refs created by the host.
+    std::unordered_map<uint64_t, ARA::ARAAudioReaderHostRef>
+        audio_reader_host_refs_;
+    std::atomic_uint64_t next_audio_reader_handle_{1};
+
+    // The DAW's host callback interfaces, valid for the lifetime of this DC.
+    const ARA::ARADocumentControllerHostInstance* host_instance_ = nullptr;
+
    private:
     static AraDocumentControllerProxy* self(
         ARA::ARADocumentControllerRef ref) noexcept {

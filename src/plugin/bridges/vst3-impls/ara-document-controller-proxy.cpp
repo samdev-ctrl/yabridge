@@ -637,7 +637,7 @@ AraDocumentControllerProxy::is_audio_source_content_analysis_incomplete(
     ARA::ARADocumentControllerRef /*r*/,
     ARA::ARAAudioSourceRef /*audioSourceRef*/,
     ARA::ARAContentType /*contentType*/) {
-    return ARA::kARATrue;
+    return ARA::kARAFalse;
 }
 
 void ARA_CALL AraDocumentControllerProxy::request_audio_source_content_analysis(
@@ -771,22 +771,30 @@ ARA::ARABool ARA_CALL AraDocumentControllerProxy::restore_objects_from_archive(
         if (filter->audioSourceArchiveIDs) {
             for (ARA::ARASize i = 0; i < filter->audioSourceIDsCount; ++i)
                 f.audio_source_archive_ids.push_back(
-                    filter->audioSourceArchiveIDs[i]);
+                    filter->audioSourceArchiveIDs[i]
+                        ? filter->audioSourceArchiveIDs[i]
+                        : "");
         }
         if (filter->audioSourceCurrentIDs) {
             for (ARA::ARASize i = 0; i < filter->audioSourceIDsCount; ++i)
                 f.audio_source_current_ids.push_back(
-                    filter->audioSourceCurrentIDs[i]);
+                    filter->audioSourceCurrentIDs[i]
+                        ? filter->audioSourceCurrentIDs[i]
+                        : "");
         }
         if (filter->audioModificationArchiveIDs) {
             for (ARA::ARASize i = 0; i < filter->audioModificationIDsCount; ++i)
                 f.audio_modification_archive_ids.push_back(
-                    filter->audioModificationArchiveIDs[i]);
+                    filter->audioModificationArchiveIDs[i]
+                        ? filter->audioModificationArchiveIDs[i]
+                        : "");
         }
         if (filter->audioModificationCurrentIDs) {
             for (ARA::ARASize i = 0; i < filter->audioModificationIDsCount; ++i)
                 f.audio_modification_current_ids.push_back(
-                    filter->audioModificationCurrentIDs[i]);
+                    filter->audioModificationCurrentIDs[i]
+                        ? filter->audioModificationCurrentIDs[i]
+                        : "");
         }
         ya_filter = std::move(f);
     }
